@@ -175,4 +175,4 @@ When resuming a session from another machine, the extension copies the session f
 
 ## License
 
-MIT
+GPL 3.0
