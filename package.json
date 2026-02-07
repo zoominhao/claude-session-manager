@@ -1,0 +1,219 @@
+{
+  "name": "claude-session-manager",
+  "displayName": "Claude Session Manager",
+  "description": "Manage Claude Code conversation sessions from the VSCode sidebar",
+  "version": "1.0.0",
+  "publisher": "zoomin",
+  "icon": "resources/icon.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claude-sessions",
+          "title": "Claude Sessions",
+          "icon": "resources/claude-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "claude-sessions": [
+        {
+          "id": "claudeSessionsView",
+          "name": "Sessions"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "claudeSessions.refresh",
+        "title": "Refresh Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "claudeSessions.rename",
+        "title": "Rename Session",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "claudeSessions.copyId",
+        "title": "Copy Session ID"
+      },
+      {
+        "command": "claudeSessions.openFile",
+        "title": "Open Session File",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "claudeSessions.resume",
+        "title": "Resume Session in Terminal",
+        "icon": "$(play)"
+      },
+      {
+        "command": "claudeSessions.delete",
+        "title": "Delete Session",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "claudeSessions.filterProject",
+        "title": "Filter by Project",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "claudeSessions.syncConfigure",
+        "title": "Configure WebDAV Sync",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "claudeSessions.syncNow",
+        "title": "Sync Sessions Now",
+        "icon": "$(sync)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "claudeSessions.refresh",
+          "when": "view == claudeSessionsView",
+          "group": "navigation"
+        },
+        {
+          "command": "claudeSessions.filterProject",
+          "when": "view == claudeSessionsView",
+          "group": "navigation"
+        },
+        {
+          "command": "claudeSessions.syncNow",
+          "when": "view == claudeSessionsView",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "claudeSessions.rename",
+          "when": "view == claudeSessionsView && viewItem == session",
+          "group": "inline@1"
+        },
+        {
+          "command": "claudeSessions.resume",
+          "when": "view == claudeSessionsView && viewItem == session",
+          "group": "inline@2"
+        },
+        {
+          "command": "claudeSessions.openFile",
+          "when": "view == claudeSessionsView && viewItem == session",
+          "group": "inline@3"
+        },
+        {
+          "command": "claudeSessions.delete",
+          "when": "view == claudeSessionsView && viewItem == session",
+          "group": "inline@4"
+        },
+        {
+          "command": "claudeSessions.copyId",
+          "when": "view == claudeSessionsView && viewItem == session",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "claudeSessions.openFile",
+          "when": "view == claudeSessionsView && viewItem == session",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "claudeSessions.delete",
+          "when": "view == claudeSessionsView && viewItem == session",
+          "group": "2_destructive@1"
+        },
+        {
+          "command": "claudeSessions.syncConfigure",
+          "when": "view == claudeSessionsView",
+          "group": "3_sync@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Claude Session Manager",
+      "properties": {
+        "claudeSessionManager.claudeDirs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to .claude directory"
+              },
+              "platform": {
+                "type": "string",
+                "enum": ["darwin", "win32", "linux", "all"],
+                "description": "Platform this path applies to (darwin=macOS, win32=Windows, linux=Linux, all=any platform)"
+              },
+              "hostname": {
+                "type": "string",
+                "description": "Only match on machine with this hostname (use `hostname` command to check). Required when multiple machines share the same platform."
+              },
+              "name": {
+                "type": "string",
+                "description": "Machine display name (e.g. 'MacBook Pro', 'Work PC')"
+              },
+              "label": {
+                "type": "string",
+                "description": "Source label (e.g. 'Local', 'iCloud Sync')"
+              }
+            },
+            "required": ["path"]
+          },
+          "default": [],
+          "markdownDescription": "Session source directories per machine. Use `hostname` to distinguish multiple machines on the same platform.\n\nExample:\n```json\n[\n  { \"path\": \"~/.claude\", \"platform\": \"darwin\", \"hostname\": \"My-MacBook\", \"name\": \"MacBook Pro\", \"label\": \"Mac01\" },\n  { \"path\": \"~/.claude\", \"platform\": \"darwin\", \"hostname\": \"My-iMac\", \"name\": \"iMac\", \"label\": \"Mac02\" },\n  { \"path\": \"C:\\\\Users\\\\me\\\\.claude\", \"platform\": \"win32\", \"hostname\": \"WORK-PC\", \"name\": \"Work PC\", \"label\": \"Win01\" }\n]\n```\n\nRun `hostname` in terminal to get your machine's hostname."
+        },
+        "claudeSessionManager.autoRefreshInterval": {
+          "type": "number",
+          "default": 10,
+          "description": "Auto-refresh interval in seconds (0 to disable)"
+        },
+        "claudeSessionManager.sync.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable WebDAV sync for session files"
+        },
+        "claudeSessionManager.sync.webdavUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "WebDAV server URL (e.g. `https://dav.jianguoyun.com/dav/ClaudeSessions`)"
+        },
+        "claudeSessionManager.sync.webdavUsername": {
+          "type": "string",
+          "default": "",
+          "description": "WebDAV username (email for Jianguoyun)"
+        },
+        "claudeSessionManager.sync.autoSyncInterval": {
+          "type": "number",
+          "default": 3600,
+          "description": "Auto-sync interval in seconds (0 to disable, minimum 60)"
+        },
+        "claudeSessionManager.sync.syncOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically sync when VSCode starts"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
