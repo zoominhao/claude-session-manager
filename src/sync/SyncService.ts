@@ -63,6 +63,11 @@ export class SyncService implements vscode.Disposable {
     return this.cacheDir;
   }
 
+  /** Check if a directory is inside the WebDAV cache (should not be uploaded) */
+  private isCacheDir(dir: string): boolean {
+    return dir === this.cacheDir || dir.startsWith(this.cacheDir + path.sep);
+  }
+
   getStatus(): SyncStatus {
     return this.status;
   }
@@ -210,6 +215,20 @@ export class SyncService implements vscode.Disposable {
     const localFiles = this.scanLocalFiles();
     this.log(`Found ${localFiles.size} local session files`);
 
+    // Clean manifest: remove entries for local files that no longer exist
+    const manifestEntries = this.manifest.getAllEntries();
+    let manifestCleaned = 0;
+    for (const key of Object.keys(manifestEntries)) {
+      if (key.startsWith(`hosts/${this.hostname}/`) && !localFiles.has(key)) {
+        this.manifest.removeEntry(key);
+        manifestCleaned++;
+      }
+    }
+    if (manifestCleaned > 0) {
+      this.manifest.save();
+      this.log(`Cleaned ${manifestCleaned} stale manifest entries`);
+    }
+
     progress.report({ message: 'Scanning remote sessions...' });
     const myRemoteFiles = await this.scanHostRemoteFiles(this.hostname);
     this.log(`Found ${myRemoteFiles.size} remote files for this host`);
@@ -217,9 +236,21 @@ export class SyncService implements vscode.Disposable {
     const uploadChanges = this.computeUploadChanges(localFiles, myRemoteFiles);
     this.log(`Uploads needed: ${uploadChanges.length}`);
 
-    // 2. Download sessions from all OTHER hosts
+    // 1b. Clean up: delete cloud files for current host that no longer exist locally
+    const remoteOnlyFiles: string[] = [];
+    for (const [relativePath] of myRemoteFiles) {
+      if (!localFiles.has(relativePath)) {
+        remoteOnlyFiles.push(relativePath);
+      }
+    }
+    if (remoteOnlyFiles.length > 0) {
+      this.log(`Cleaning ${remoteOnlyFiles.length} deleted files from cloud`);
+    }
+
+    // 2. Download sessions from all OTHER hosts & clean stale cache
     const otherHosts = await this.listRemoteHosts();
     const downloadChanges: FileChange[] = [];
+    const staleCacheFiles: string[] = [];
     for (const host of otherHosts) {
       if (host === this.hostname) { continue; }
       progress.report({ message: `Scanning remote host: ${host}...` });
@@ -249,10 +280,34 @@ export class SyncService implements vscode.Disposable {
           });
         }
       }
+
+      // Find cached files for this host that no longer exist on cloud
+      const hostCacheDir = path.join(this.cacheDir, 'hosts', host, 'projects');
+      if (fs.existsSync(hostCacheDir)) {
+        try {
+          const projDirs = fs.readdirSync(hostCacheDir)
+            .filter(d => fs.statSync(path.join(hostCacheDir, d)).isDirectory());
+          for (const projDir of projDirs) {
+            const projPath = path.join(hostCacheDir, projDir);
+            const cachedFiles = fs.readdirSync(projPath)
+              .filter(f => f.endsWith('.jsonl'));
+            for (const file of cachedFiles) {
+              const relativePath = `hosts/${host}/projects/${projDir}/${file}`;
+              if (!hostFiles.has(relativePath)) {
+                staleCacheFiles.push(path.join(projPath, file));
+                this.manifest.removeEntry(relativePath);
+              }
+            }
+          }
+        } catch { /* skip */ }
+      }
     }
     this.log(`Downloads needed: ${downloadChanges.length}`);
+    if (staleCacheFiles.length > 0) {
+      this.log(`Stale cache files to clean: ${staleCacheFiles.length}`);
+    }
 
-    const total = uploadChanges.length + downloadChanges.length;
+    const total = uploadChanges.length + downloadChanges.length + remoteOnlyFiles.length;
     let current = 0;
 
     // Execute uploads
@@ -265,6 +320,22 @@ export class SyncService implements vscode.Disposable {
       await this.uploadFile(change);
     }
 
+    // Execute cloud cleanup (delete files that no longer exist locally)
+    for (const relativePath of remoteOnlyFiles) {
+      current++;
+      progress.report({
+        message: `Cleaning (${current}/${total}): ${path.basename(relativePath)}`,
+        increment: total > 0 ? 100 / total : 0,
+      });
+      try {
+        await this.client.delete('/' + relativePath);
+        this.manifest.removeEntry(relativePath);
+        this.log(`Cleaned remote: ${relativePath}`);
+      } catch (err) {
+        this.log(`Cloud cleanup failed: ${relativePath} - ${err}`);
+      }
+    }
+
     // Execute downloads
     for (const change of downloadChanges) {
       current++;
@@ -273,6 +344,17 @@ export class SyncService implements vscode.Disposable {
         increment: total > 0 ? 100 / total : 0,
       });
       await this.downloadFile(change);
+    }
+
+    // Clean stale cache files (cloud-side deletions)
+    for (const cachePath of staleCacheFiles) {
+      try {
+        fs.unlinkSync(cachePath);
+        this.log(`Deleted stale cache: ${path.basename(cachePath)}`);
+      } catch { /* skip */ }
+    }
+    if (staleCacheFiles.length > 0) {
+      this.manifest.save();
     }
 
     // Sync metadata
@@ -284,7 +366,7 @@ export class SyncService implements vscode.Disposable {
     const files = new Map<string, { fullPath: string; size: number; mtimeMs: number }>();
 
     for (const { dir } of this.parser.getClaudeDirs()) {
-      if (dir === this.cacheDir) { continue; }
+      if (this.isCacheDir(dir)) { continue; }
 
       const projectsDir = path.join(dir, 'projects');
       if (!fs.existsSync(projectsDir)) { continue; }
@@ -304,8 +386,24 @@ export class SyncService implements vscode.Disposable {
           for (const file of sessionFiles) {
             const fullPath = path.join(fullProjectDir, file);
             const stat = fs.statSync(fullPath);
-            if (stat.isDirectory() || stat.size === 0) { continue; }
-            if (Date.now() - stat.mtimeMs < 30000) { continue; }
+            if (stat.isDirectory()) { continue; }
+
+            // Delete invalid sessions (empty file, no messages) from local disk
+            if (stat.size === 0) {
+              try {
+                fs.unlinkSync(fullPath);
+                this.log(`Deleted empty local session: ${file}`);
+              } catch { /* skip */ }
+              continue;
+            }
+            const session = this.parser.parseSessionFile(fullPath);
+            if (!session || session.messageCount === 0) {
+              try {
+                fs.unlinkSync(fullPath);
+                this.log(`Deleted invalid local session: ${file}`);
+              } catch { /* skip */ }
+              continue;
+            }
 
             // Remote path: /hosts/{hostname}/projects/{proj}/{file}
             const relativePath = `hosts/${this.hostname}/projects/${projectDir}/${file}`;
@@ -444,11 +542,11 @@ export class SyncService implements vscode.Disposable {
     if (!this.client) { return; }
 
     const configuredName = this.parser.getClaudeDirs()
-      .find(d => d.dir !== this.cacheDir && d.name)?.name || this.hostname;
+      .find(d => !this.isCacheDir(d.dir) && d.name)?.name || this.hostname;
 
     const projectDirs: string[] = [];
     for (const { dir } of this.parser.getClaudeDirs()) {
-      if (dir === this.cacheDir) { continue; }
+      if (this.isCacheDir(dir)) { continue; }
       const projectsDir = path.join(dir, 'projects');
       if (!fs.existsSync(projectsDir)) { continue; }
       try {
@@ -507,21 +605,28 @@ export class SyncService implements vscode.Disposable {
     if (!this.client) { return; }
 
     const claudeDirs = this.parser.getClaudeDirs();
-    const primaryDir = claudeDirs.find(d => d.dir !== this.cacheDir)?.dir;
+    const primaryDir = claudeDirs.find(d => !this.isCacheDir(d.dir))?.dir;
     if (!primaryDir) { return; }
 
     const localPath = path.join(primaryDir, 'history.jsonl');
     const localContent = fs.existsSync(localPath) ? fs.readFileSync(localPath, 'utf-8') : '';
 
     try {
+      // Clean history.jsonl: remove entries whose session files no longer exist
+      const cleanedContent = this.cleanHistoryFile(localContent, primaryDir);
+      if (cleanedContent !== localContent) {
+        fs.writeFileSync(localPath, cleanedContent);
+        this.log('Cleaned history.jsonl: removed orphaned entries');
+      }
+
       // Upload this machine's history to its host directory (no conflict)
-      if (localContent) {
-        await this.client.upload(`${this.hostPrefix}/history.jsonl`, localContent);
+      if (cleanedContent) {
+        await this.client.upload(`${this.hostPrefix}/history.jsonl`, cleanedContent);
       }
 
       // Download and merge history from all other hosts
       const hosts = await this.listRemoteHosts();
-      let merged = localContent;
+      let merged = cleanedContent;
       for (const host of hosts) {
         if (host === this.hostname) { continue; }
         try {
@@ -567,11 +672,47 @@ export class SyncService implements vscode.Disposable {
     return sorted.map(e => e.line).join('\n') + '\n';
   }
 
+  private cleanHistoryFile(content: string, claudeDir: string): string {
+    const projectsDir = path.join(claudeDir, 'projects');
+    const lines: string[] = [];
+
+    for (const line of content.split('\n')) {
+      if (!line.trim()) { continue; }
+      try {
+        const entry = JSON.parse(line);
+        if (entry.sessionId) {
+          // Check if session file exists in any local project dir
+          let exists = false;
+          if (fs.existsSync(projectsDir)) {
+            const projDirs = fs.readdirSync(projectsDir).filter(d => {
+              const full = path.join(projectsDir, d);
+              return fs.statSync(full).isDirectory() && !d.startsWith('.');
+            });
+            for (const proj of projDirs) {
+              if (fs.existsSync(path.join(projectsDir, proj, `${entry.sessionId}.jsonl`))) {
+                exists = true;
+                break;
+              }
+            }
+          }
+          if (exists) {
+            lines.push(line);
+          }
+        }
+      } catch {
+        // Keep malformed lines as-is
+        lines.push(line);
+      }
+    }
+
+    return lines.length > 0 ? lines.join('\n') + '\n' : '';
+  }
+
   private async syncSessionNames(): Promise<void> {
     if (!this.client) { return; }
 
     const claudeDirs = this.parser.getClaudeDirs();
-    const primaryDir = claudeDirs.find(d => d.dir !== this.cacheDir)?.dir;
+    const primaryDir = claudeDirs.find(d => !this.isCacheDir(d.dir))?.dir;
     if (!primaryDir) { return; }
 
     const localPath = path.join(primaryDir, 'session-names.json');

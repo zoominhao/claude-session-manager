@@ -16,6 +16,8 @@ export function registerSyncCommands(
 
   const refreshHostSources = () => {
     const hostsDir = path.join(syncService.getCacheDir(), 'hosts');
+    const machinesDir = syncService.getMachineDescriptorsDir();
+    parser.setMachineDescriptorsDir(machinesDir);
     if (fs.existsSync(hostsDir)) {
       try {
         const hostDirs = fs.readdirSync(hostsDir).filter(d =>
@@ -23,11 +25,20 @@ export function registerSyncCommands(
         );
         for (const host of hostDirs) {
           if (host === currentHostname) { continue; }
-          parser.addRuntimeSource(path.join(hostsDir, host), `WebDAV (${host})`);
+          let name: string | undefined;
+          let platform: string | undefined;
+          const descPath = path.join(machinesDir, `${host}.json`);
+          if (fs.existsSync(descPath)) {
+            try {
+              const desc = JSON.parse(fs.readFileSync(descPath, 'utf-8'));
+              name = desc.name;
+              platform = desc.platform;
+            } catch { /* skip */ }
+          }
+          parser.addRuntimeSource(path.join(hostsDir, host), `WebDAV (${host})`, name, platform);
         }
       } catch { /* skip */ }
     }
-    parser.setMachineDescriptorsDir(syncService.getMachineDescriptorsDir());
   };
 
   // Configure sync

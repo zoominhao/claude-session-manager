@@ -29,17 +29,31 @@ export function activate(context: vscode.ExtensionContext) {
   const syncCacheDir = syncService.getCacheDir();
   const hostsDir = path.join(syncCacheDir, 'hosts');
   const currentHostname = require('os').hostname();
-  if (fs.existsSync(hostsDir)) {
+  const addCachedHosts = () => {
+    if (!fs.existsSync(hostsDir)) { return; }
     try {
       const hostDirs = fs.readdirSync(hostsDir).filter(d =>
         fs.statSync(path.join(hostsDir, d)).isDirectory()
       );
+      const machinesDir = syncService.getMachineDescriptorsDir();
       for (const host of hostDirs) {
         if (host === currentHostname) { continue; }
-        parser.addRuntimeSource(path.join(hostsDir, host), `WebDAV (${host})`);
+        // Read machine descriptor for name/platform
+        let name: string | undefined;
+        let platform: string | undefined;
+        const descPath = path.join(machinesDir, `${host}.json`);
+        if (fs.existsSync(descPath)) {
+          try {
+            const desc = JSON.parse(fs.readFileSync(descPath, 'utf-8'));
+            name = desc.name;
+            platform = desc.platform;
+          } catch { /* skip */ }
+        }
+        parser.addRuntimeSource(path.join(hostsDir, host), `WebDAV (${host})`, name, platform);
       }
     } catch { /* skip */ }
-  }
+  };
+  addCachedHosts();
 
   // Point parser to machine descriptors directory for auto-detection
   parser.setMachineDescriptorsDir(syncService.getMachineDescriptorsDir());

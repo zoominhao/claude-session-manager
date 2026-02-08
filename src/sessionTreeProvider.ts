@@ -83,8 +83,7 @@ export class SessionTreeItem extends vscode.TreeItem {
 
     parts.push(`${this.session.messageCount} msgs`);
 
-    const timeAgo = this.timeAgo(this.session.lastModified);
-    parts.push(timeAgo);
+    parts.push(this.formatDateTime(this.session.createdAt));
 
     return parts.join(' · ');
   }
@@ -102,17 +101,12 @@ export class SessionTreeItem extends vscode.TreeItem {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 
-  private timeAgo(date: Date): string {
-    const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
-    if (seconds < 60) { return 'just now'; }
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) { return `${minutes}m ago`; }
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) { return `${hours}h ago`; }
-    const days = Math.floor(hours / 24);
-    if (days < 30) { return `${days}d ago`; }
-    const months = Math.floor(days / 30);
-    return `${months}mo ago`;
+  private formatDateTime(date: Date): string {
+    const m = date.getMonth() + 1;
+    const d = date.getDate();
+    const h = date.getHours().toString().padStart(2, '0');
+    const min = date.getMinutes().toString().padStart(2, '0');
+    return `${m}/${d} ${h}:${min}`;
   }
 }
 
@@ -191,12 +185,20 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<vscode.TreeI
         );
       }
 
-      // Multiple machines: show machine groups
+      // Multiple machines: show machine groups, current host first
+      const localMachine = this.parser.getLocalMachineName();
       const items: MachineTreeItem[] = [];
+      const otherItems: MachineTreeItem[] = [];
       for (const [machine, sessions] of this.machineGroups) {
         const hasActive = sessions.some(s => s.isActive);
-        items.push(new MachineTreeItem(machine, sessions.length, hasActive));
+        const item = new MachineTreeItem(machine, sessions.length, hasActive);
+        if (machine === localMachine) {
+          items.push(item);
+        } else {
+          otherItems.push(item);
+        }
       }
+      items.push(...otherItems);
       return items;
     }
 

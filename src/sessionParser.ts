@@ -132,9 +132,9 @@ export class SessionParser {
     return this.claudeDirs;
   }
 
-  addRuntimeSource(dir: string, label: string): void {
+  addRuntimeSource(dir: string, label: string, name?: string, platform?: string): void {
     if (!this.claudeDirs.some(d => d.dir === dir)) {
-      this.claudeDirs.push({ dir, label });
+      this.claudeDirs.push({ dir, label, name, platform });
     }
   }
 
@@ -198,6 +198,17 @@ export class SessionParser {
     this.buildMachineCache();
   }
 
+  /** Get the display label for the local machine (used for sorting machine groups) */
+  getLocalMachineName(): string {
+    const info = this.hostnameMap.get(os.hostname());
+    if (info) {
+      return this.buildMachineNameLabel(info.name);
+    }
+    const icon = SessionParser.platformIcon(os.platform());
+    const label = SessionParser.platformLabel(os.platform());
+    return `${icon} ${os.hostname()} (${label})`;
+  }
+
   // Build a lookup: machine name -> display label (with icon)
   private buildMachineNameLabel(machineName: string): string {
     // Try to find platform from claudeDirs config
@@ -234,30 +245,6 @@ export class SessionParser {
    * Resolve a hostname to the configured machine name.
    * Checks claudeDirs config first, then synced machine descriptors.
    */
-  private resolveHostnameToName(hostname: string): string {
-    // 1. From claudeDirs config
-    const configured = this.hostnameMap.get(hostname);
-    if (configured) { return configured.name; }
-
-    // 2. From synced machine descriptors
-    if (this.machineDescriptorsDir && fs.existsSync(this.machineDescriptorsDir)) {
-      try {
-        const files = fs.readdirSync(this.machineDescriptorsDir).filter(f => f.endsWith('.json'));
-        for (const file of files) {
-          try {
-            const desc = JSON.parse(fs.readFileSync(path.join(this.machineDescriptorsDir, file), 'utf-8'));
-            if (desc.hostname === hostname && desc.name) {
-              return desc.name;
-            }
-          } catch { /* skip */ }
-        }
-      } catch { /* skip */ }
-    }
-
-    return hostname;
-  }
-
-
   private buildMachineCache(): void {
     this.machineCache.clear();
     this.sourceMachineCache.clear();
@@ -554,9 +541,11 @@ export class SessionParser {
 
   getAllSessions(projectFilter?: string): SessionInfo[] {
     const sessions: SessionInfo[] = [];
-    const seenIds = new Set<string>();
-
-    for (const { dir: claudeDir, label: sourceLabel } of this.claudeDirs) {
+    for (const src of this.claudeDirs) {
+      const claudeDir = src.dir;
+      const sourceLabel = src.label;
+      // Machine label from source (highest priority)
+      const sourceMachine = src.name ? this.buildMachineNameLabel(src.name) : undefined;
       const historyEntries = this.getHistoryEntriesForSource(claudeDir);
       const projectDirs = this.getProjectDirsForSource(claudeDir);
 
@@ -583,13 +572,9 @@ export class SessionParser {
             if (!session) { continue; }
             if (session.messageCount === 0) { continue; }
 
-            // Deduplicate across sources (cloud sync may have same session)
-            if (seenIds.has(session.sessionId)) { continue; }
-            seenIds.add(session.sessionId);
-
             session.project = projectName;
             session.projectDisplay = this.resolveProjectDisplay(projectName);
-            session.machine = this.resolveMachine(projectName);
+            session.machine = sourceMachine || this.resolveMachine(projectName);
             session.source = sourceLabel;
 
             // Enrich with history data
@@ -611,7 +596,7 @@ export class SessionParser {
       }
     }
 
-    sessions.sort((a, b) => b.lastModified.getTime() - a.lastModified.getTime());
+    sessions.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
     return sessions;
   }

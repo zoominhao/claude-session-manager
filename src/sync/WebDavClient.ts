@@ -100,11 +100,11 @@ export class WebDavClient {
 
   async mkdir(remotePath: string): Promise<void> {
     const resp = await this.request('MKCOL', remotePath);
-    if (resp.status !== 201 && resp.status !== 405) {
-      // 405 = already exists, which is fine
-      if (resp.status >= 400) {
-        throw new Error(`mkdir failed: ${resp.status} ${resp.statusText}`);
-      }
+    // 201 = created, 405 = method not allowed (often means exists)
+    // Some servers return 301/409 if parent doesn't exist
+    if (resp.status === 201 || resp.status === 405) { return; }
+    if (resp.status >= 400) {
+      throw new Error(`mkdir failed: ${resp.status} ${resp.statusText}`);
     }
   }
 
@@ -121,9 +121,11 @@ export class WebDavClient {
     for (const part of parts) {
       current += '/' + part;
       if (this.knownDirs.has(current)) { continue; }
-      // Try mkdir directly (MKCOL), skip exists check to save a request
-      // 405 = already exists, which is fine
-      await this.mkdir(current);
+      // Check if dir exists first, then create if needed
+      const dirExists = await this.exists(current);
+      if (!dirExists) {
+        await this.mkdir(current);
+      }
       this.knownDirs.add(current);
     }
   }
